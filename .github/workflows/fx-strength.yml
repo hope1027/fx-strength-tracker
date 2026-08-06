@@ -2,12 +2,7 @@ name: FX Strength Snapshot
 
 on:
   schedule:
-    # UTC 時間 → 對應台灣時間（UTC+8）
-    - cron: "0 0 * * *"   # UTC 00:00 → 台灣 08:00
-    - cron: "0 4 * * *"   # UTC 04:00 → 台灣 12:00
-    - cron: "0 8 * * *"   # UTC 08:00 → 台灣 16:00
-    - cron: "0 12 * * *"  # UTC 12:00 → 台灣 20:00
-    - cron: "0 16 * * *"  # UTC 16:00 → 台灣 00:00（隔日）
+    - cron: "0 * * * *"   # 每小時整點觸發一次（UTC 時間，一天 24 次）
   workflow_dispatch: {}   # 讓你可以在 Actions 頁面手動按「Run workflow」測試
 
 permissions:
