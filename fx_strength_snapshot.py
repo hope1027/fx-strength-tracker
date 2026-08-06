@@ -150,7 +150,7 @@ def relative_change_scores(baseline_row, vusd_now):
     return scores
 
 
-def top_bottom(scores, n=3):
+def top_bottom(scores, n=7):
     ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
     return ranked[:n], ranked[-n:][::-1]
 
@@ -160,11 +160,13 @@ def write_results(ts_iso, today_scores, yday_scores):
 
     def fmt_block(title, scores):
         if not scores:
-            return f"### {title}\n（目前歷史資料還不夠比較，之後幾次執行會自動補齊）\n"
+            return f"### {title}\n（沒有足夠的歷史資料可比較，之後幾次執行會自動補齊）\n"
         top, bottom = top_bottom(scores)
-        lines = [f"### {title}", "**最強 3 名**"]
+        lines = [f"### {title}", "", "**最強 7 名**", ""]
         lines += [f"- {c}：{s:+.3f}" for c, s in top]
-        lines.append("**最弱 3 名**")
+        lines.append("")
+        lines.append("**最弱 7 名**")
+        lines.append("")
         lines += [f"- {c}：{s:+.3f}" for c, s in bottom]
         return "\n".join(lines) + "\n"
 
