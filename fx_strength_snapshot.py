@@ -1,16 +1,15 @@
 """
-貨幣強弱快照腳本 — 搭配 GitHub Actions 定時執行
+貨幣強弱快照腳本 — 搭配 GitHub Actions 定時執行（每小時一次）
 
 每次執行會做這幾件事：
- 1. 呼叫 Twelve Data 的 quote API，一次拿回 27 個「XXX/USD」報價
+ 1. 呼叫 Twelve Data 的 quote API，分批拿回 27 個「XXX/USD」報價
  2. 換算成每個貨幣「以美元計價的價值」(vUSD)
- 3. 讀取歷史快照（data/snapshots.csv），找出：
-      - 今天最早一筆快照 → 當日基準
-      - 昨天同一時段最接近的一筆 → 跨日基準
- 4. 用一籃子平均法（跟其餘 27 個貨幣比）算出每個貨幣的相對強弱分數
-    （當日動能 / 跨日趨勢 各算一組）
- 5. 找出最強 3 名、最弱 3 名，寫入 results/latest.md 與 results/history.csv
- 6. 把這次快照寫回 data/snapshots.csv，供下一次執行比對基準
+ 3. 讀取歷史快照（data/snapshots.csv），分別找出跟現在最接近
+    1 小時前 / 4 小時前 / 24 小時前 的那一筆快照當基準
+ 4. 用一籃子平均法（跟其餘 27 個貨幣比）算出每個貨幣的相對強弱分數，
+    1H / 4H / 1D 各算一組
+ 5. 每組各自找出最強 7 名、最弱 7 名，寫入 results/latest.md 與 results/history.csv
+ 6. 把這次快照寫回 data/snapshots.csv，供之後執行比對基準
 
 環境變數（用 GitHub Secrets 設定，不要寫死在程式碼裡）：
  TWELVE_DATA_API_KEY   必填，去 twelvedata.com 免費申請
@@ -104,28 +103,28 @@ def append_snapshot(ts_iso, vusd):
         w.writerow(row)
 
 
-def find_baseline(snapshots, mode, now):
-    """mode='today' 找今天最早一筆；mode='yesterday' 找昨天最接近同一時間的一筆"""
-    today = now.date()
-    yesterday = today - datetime.timedelta(days=1)
-    candidates = []
+WINDOWS = [
+    ("1H", 1),
+    ("4H", 4),
+    ("1D", 24),
+]
+BASELINE_TOLERANCE_MIN = 20  # 找基準快照時，容許的時間誤差（分鐘）
+
+
+def find_baseline_by_hours(snapshots, hours_ago, now):
+    """在歷史快照裡，找出時間最接近『now 減 hours_ago 小時』的那一筆，
+    容許 BASELINE_TOLERANCE_MIN 分鐘內的誤差（避免因為某次執行失敗、
+    時間點沒對齊，就直接找不到基準）。找不到就回傳 None。"""
+    target = now - datetime.timedelta(hours=hours_ago)
+    best_row, best_diff = None, None
     for row in snapshots:
         ts = datetime.datetime.fromisoformat(row["timestamp"])
-        if mode == "today" and ts.date() == today:
-            candidates.append((ts, row))
-        elif mode == "yesterday" and ts.date() == yesterday:
-            candidates.append((ts, row))
-    if not candidates:
-        return None
-    if mode == "today":
-        candidates.sort(key=lambda x: x[0])
-        return candidates[0][1]
-    candidates.sort(
-        key=lambda x: abs(
-            (x[0].hour * 60 + x[0].minute) - (now.hour * 60 + now.minute)
-        )
-    )
-    return candidates[0][1]
+        diff = abs((ts - target).total_seconds())
+        if best_diff is None or diff < best_diff:
+            best_diff, best_row = diff, row
+    if best_row is not None and best_diff <= BASELINE_TOLERANCE_MIN * 60:
+        return best_row
+    return None
 
 
 def relative_change_scores(baseline_row, vusd_now):
@@ -155,12 +154,12 @@ def top_bottom(scores, n=7):
     return ranked[:n], ranked[-n:][::-1]
 
 
-def write_results(ts_iso, today_scores, yday_scores):
+def write_results(ts_iso, window_scores):
     RESULTS_DIR.mkdir(exist_ok=True)
 
     def fmt_block(title, scores):
         if not scores:
-            return f"### {title}\n（沒有足夠的歷史資料可比較，之後幾次執行會自動補齊）\n"
+            return f"### {title}\n（這個區間還沒有足夠久的歷史資料，之後執行會自動補齊）\n"
         top, bottom = top_bottom(scores)
         lines = [f"### {title}", "", "**最強 7 名**", ""]
         lines += [f"- {c}：{s:+.3f}" for c, s in top]
@@ -171,8 +170,9 @@ def write_results(ts_iso, today_scores, yday_scores):
         return "\n".join(lines) + "\n"
 
     content = f"# 貨幣強弱快照 — {ts_iso}\n\n"
-    content += fmt_block("當日動能（跟今天最早一筆比）", today_scores) + "\n"
-    content += fmt_block("跨日趨勢（跟昨天同時段比）", yday_scores)
+    labels = {"1H": "1 小時線（跟 1 小時前比）", "4H": "4 小時線（跟 4 小時前比）", "1D": "1 日線（跟 24 小時前比）"}
+    for key, scores in window_scores.items():
+        content += fmt_block(labels[key], scores) + "\n"
 
     (RESULTS_DIR / "latest.md").write_text(content, encoding="utf-8")
 
@@ -180,13 +180,13 @@ def write_results(ts_iso, today_scores, yday_scores):
     with open(HISTORY_CSV, "a", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         if is_new:
-            w.writerow(["timestamp", "basis", "rank", "currency", "score"])
-        for basis, scores in (("today", today_scores), ("yesterday", yday_scores)):
+            w.writerow(["timestamp", "window", "rank", "currency", "score"])
+        for key, scores in window_scores.items():
             if not scores:
                 continue
             ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
             for i, (c, s) in enumerate(ranked, start=1):
-                w.writerow([ts_iso, basis, i, c, f"{s:.4f}"])
+                w.writerow([ts_iso, key, i, c, f"{s:.4f}"])
 
     return content
 
@@ -205,11 +205,13 @@ def main():
     vusd = fetch_vusd()
     snapshots = load_snapshots()
 
-    today_scores = relative_change_scores(find_baseline(snapshots, "today", now), vusd)
-    yday_scores = relative_change_scores(find_baseline(snapshots, "yesterday", now), vusd)
+    window_scores = {}
+    for key, hours in WINDOWS:
+        baseline = find_baseline_by_hours(snapshots, hours, now)
+        window_scores[key] = relative_change_scores(baseline, vusd)
 
     append_snapshot(ts_iso, vusd)
-    content = write_results(ts_iso, today_scores, yday_scores)
+    content = write_results(ts_iso, window_scores)
     notify_telegram(content)
 
     print(content)
