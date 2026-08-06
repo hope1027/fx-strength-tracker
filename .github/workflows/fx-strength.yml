@@ -2,7 +2,9 @@ name: FX Strength Snapshot
 
 on:
   schedule:
-    - cron: "0 * * * *"   # 每小時整點觸發一次（UTC 時間，一天 24 次）
+    # 故意避開整點（0 分）— GitHub 官方建議：全世界排程都集中在整點觸發，
+    # 容易壅塞導致延遲甚至被跳過，錯開到第 17 分可以大幅降低這個機率
+    - cron: "17 * * * *"   # 每小時第 17 分觸發一次（UTC 時間，一天 24 次）
   workflow_dispatch: {}   # 讓你可以在 Actions 頁面手動按「Run workflow」測試
 
 permissions:
