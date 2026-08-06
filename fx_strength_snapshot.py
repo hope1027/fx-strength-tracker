@@ -21,6 +21,7 @@
 import os
 import csv
 import math
+import time
 import datetime
 import pathlib
 import requests
@@ -46,26 +47,41 @@ TG_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TG_CHAT = os.environ.get("TELEGRAM_CHAT_ID")
 
 
+CHUNK_SIZE = 7  # 免費方案每分鐘只有 8 次額度，抓 7 個留一點緩衝
+WAIT_BETWEEN_BATCHES = 65  # 秒，故意等超過 1 分鐘再打下一批，避免踩到 429
+
+
 def fetch_vusd():
-    """一次呼叫 Twelve Data，取得每個貨幣兌美元的價格（= vUSD）"""
-    symbols = ",".join(f"{c}/USD" for c in CURRENCIES)
+    """分批呼叫 Twelve Data，取得每個貨幣兌美元的價格（= vUSD）。
+    免費方案有「每分鐘 8 次」的額度限制，一次把 27 個 symbol
+    塞進同一個請求會直接超過限制被擋（429），所以拆成小批，
+    批次之間刻意等待超過 1 分鐘。"""
     url = "https://api.twelvedata.com/quote"
-    resp = requests.get(url, params={"symbol": symbols, "apikey": API_KEY}, timeout=20)
-    resp.raise_for_status()
-    data = resp.json()
-
-    # 只查一個 symbol 時 Twelve Data 回傳單一物件；多個 symbol 時回傳 {symbol: {...}}
-    if "symbol" in data:
-        data = {data["symbol"]: data}
-
     vusd = {"USD": 1.0}
-    for c in CURRENCIES:
-        key = f"{c}/USD"
-        item = data.get(key)
-        if item and "close" in item:
-            vusd[c] = float(item["close"])
-        else:
-            print(f"⚠️ 沒有拿到 {key} 的報價，本次先跳過")
+
+    batches = [CURRENCIES[i:i + CHUNK_SIZE] for i in range(0, len(CURRENCIES), CHUNK_SIZE)]
+    for idx, batch in enumerate(batches):
+        symbols = ",".join(f"{c}/USD" for c in batch)
+        resp = requests.get(url, params={"symbol": symbols, "apikey": API_KEY}, timeout=20)
+        resp.raise_for_status()
+        data = resp.json()
+
+        # 只查一個 symbol 時 Twelve Data 回傳單一物件；多個 symbol 時回傳 {symbol: {...}}
+        if "symbol" in data:
+            data = {data["symbol"]: data}
+
+        for c in batch:
+            key = f"{c}/USD"
+            item = data.get(key)
+            if item and "close" in item:
+                vusd[c] = float(item["close"])
+            else:
+                print(f"⚠️ 沒有拿到 {key} 的報價，本次先跳過")
+
+        if idx < len(batches) - 1:
+            print(f"已抓完第 {idx + 1}/{len(batches)} 批，等 {WAIT_BETWEEN_BATCHES} 秒再抓下一批…")
+            time.sleep(WAIT_BETWEEN_BATCHES)
+
     return vusd
 
 
