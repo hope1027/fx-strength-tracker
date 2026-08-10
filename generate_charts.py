@@ -1,0 +1,106 @@
+"""
+從 data/snapshots.csv 算出貨幣強弱指數，並把 1H / 4H / 1D 三種週期
+聚合成 K 線（OHLC），畫成圖片輸出。
+
+輸出：
+ charts/strength_1H.png
+ charts/strength_4H.png
+ charts/strength_1D.png
+
+每張圖只畫「目前排名最強 7 名 + 最弱 7 名」共 14 個貨幣（左欄最強、
+右欄最弱），避免 28 個貨幣全部畫在一起太雜亂、看不出重點。
+
+聚合方式：因為原始資料是每小時一筆的離散快照，不是連續報價，
+所以用「收盤價序列」去近似 OHLC——
+  開盤 = 這段期間第一筆強弱分數
+  收盤 = 這段期間最後一筆強弱分數
+  最高 = 這段期間分數的最大值
+  最低 = 這段期間分數的最小值
+這是很常見的近似做法，影線會比真實報價保守一點，但方向、型態
+的判讀完全夠用。
+"""
+
+import pathlib
+import numpy as np
+import pandas as pd
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
+
+SNAPSHOT_CSV = pathlib.Path("data/snapshots.csv")
+CHART_DIR = pathlib.Path("charts")
+SCALE = 9000
+MAX_CANDLES = 30  # 每張小圖最多顯示幾根 K 棒，太多根會太擠
+
+# (顯示用標籤, pandas resample 頻率字串)
+TIMEFRAMES = [("1H", "1h"), ("4H", "4h"), ("1D", "1D")]
+
+
+def load_strength():
+    """讀取快照，算出每個時間點、每個貨幣的強弱分數（跟排程腳本同一套公式）"""
+    df = pd.read_csv(SNAPSHOT_CSV, parse_dates=["timestamp"])
+    df = df.set_index("timestamp").sort_index()
+    currencies = list(df.columns)
+    log_v = np.log(df[currencies].astype(float))
+    strength = log_v.sub(log_v.mean(axis=1), axis=0) * SCALE
+    return strength
+
+
+def pick_top_bottom(strength, n=7):
+    latest = strength.iloc[-1].sort_values(ascending=False)
+    return latest.head(n).index.tolist(), latest.tail(n).index.tolist()
+
+
+def draw_candles(ax, ohlc, title):
+    ohlc = ohlc.dropna().tail(MAX_CANDLES)
+    if ohlc.empty:
+        ax.set_title(f"{title}\n（資料還不夠，之後會自動補齊）", fontsize=8)
+        ax.axis("off")
+        return
+    for i, (_, row) in enumerate(ohlc.iterrows()):
+        o, h, l, c = row["open"], row["high"], row["low"], row["close"]
+        up = c >= o
+        color = "#26d97a" if up else "#ff4757"
+        ax.plot([i, i], [l, h], color=color, linewidth=1)
+        bottom = min(o, c)
+        height = max(abs(c - o), 0.001)
+        ax.add_patch(Rectangle((i - 0.3, bottom), 0.6, height, color=color))
+    ax.set_title(title, fontsize=9)
+    ax.axhline(0, color="#888888", linewidth=0.5, linestyle="--")
+    ax.set_xlim(-1, len(ohlc))
+    ax.set_xticks([])
+    ax.tick_params(labelsize=7)
+
+
+def render_timeframe(strength, label, rule):
+    top, bottom = pick_top_bottom(strength)
+    codes = top + bottom
+
+    fig, axes = plt.subplots(7, 2, figsize=(11, 16))
+    fig.suptitle(f"貨幣強弱 K 線 — {label}（左：最強 7 名／右：最弱 7 名）", fontsize=13)
+
+    for i, code in enumerate(codes):
+        row_i, col_i = i % 7, i // 7
+        ax = axes[row_i][col_i]
+        ohlc = strength[code].resample(rule).ohlc()
+        draw_candles(ax, ohlc, code)
+
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    CHART_DIR.mkdir(exist_ok=True)
+    fig.savefig(CHART_DIR / f"strength_{label}.png", dpi=130)
+    plt.close(fig)
+
+
+def main():
+    if not SNAPSHOT_CSV.exists():
+        print("還沒有 data/snapshots.csv，先讓排程多跑幾次再產圖")
+        return
+    strength = load_strength()
+    for label, rule in TIMEFRAMES:
+        render_timeframe(strength, label, rule)
+        print(f"已產生 charts/strength_{label}.png")
+
+
+if __name__ == "__main__":
+    main()

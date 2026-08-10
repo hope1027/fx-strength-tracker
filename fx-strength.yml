@@ -1,0 +1,42 @@
+name: FX Strength Snapshot
+
+on:
+  schedule:
+    # 故意避開整點（0 分）— GitHub 官方建議：全世界排程都集中在整點觸發，
+    # 容易壅塞導致延遲甚至被跳過，錯開到第 17 分可以大幅降低這個機率
+    - cron: "17 * * * *"   # 每小時第 17 分觸發一次（UTC 時間，一天 24 次）
+  workflow_dispatch: {}   # 讓你可以在 Actions 頁面手動按「Run workflow」測試
+
+permissions:
+  contents: write   # 允許把結果寫回這個 repo
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 安裝套件
+        run: pip install -r requirements.txt
+
+      - name: 抓取快照並計算強弱分數
+        env:
+          TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python fx_strength_snapshot.py
+
+      - name: 產生 K 線圖
+        run: python generate_charts.py
+
+      - name: 把結果寫回 repo
+        run: |
+          git config user.name "fx-strength-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add data results charts
+          git diff --cached --quiet || git commit -m "快照 $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          git push
