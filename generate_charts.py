@@ -38,12 +38,19 @@ TIMEFRAMES = [("1H", "1h"), ("4H", "4h"), ("1D", "1D")]
 
 
 def load_strength():
-    """讀取快照，算出每個時間點、每個貨幣的強弱分數（跟排程腳本同一套公式）"""
+    """讀取快照，算出每個時間點、每個貨幣的強弱分數。
+
+    重點：不能直接拿各貨幣「原始數值的等級」互相比較——因為不同貨幣
+    天生換算單位差異極大（例如 1 GBP≈1.3 美元，但 1 IDR≈0.00006 美元），
+    這個量級差異幾乎不隨時間變化，會完全蓋掉真正的強弱波動。
+    正確做法是先算出每個貨幣「相對自己最早一筆快照」的漲跌幅（log
+    報酬率），再用這個漲跌幅去跟其他貨幣的漲跌幅做籃子平均。"""
     df = pd.read_csv(SNAPSHOT_CSV, parse_dates=["timestamp"])
     df = df.set_index("timestamp").sort_index()
     currencies = list(df.columns)
     log_v = np.log(df[currencies].astype(float))
-    strength = log_v.sub(log_v.mean(axis=1), axis=0) * SCALE
+    log_return = log_v.sub(log_v.iloc[0])  # 相對第一筆快照的漲跌幅（log）
+    strength = log_return.sub(log_return.mean(axis=1), axis=0) * SCALE
     return strength
 
 
@@ -55,7 +62,7 @@ def pick_top_bottom(strength, n=7):
 def draw_candles(ax, ohlc, title):
     ohlc = ohlc.dropna().tail(MAX_CANDLES)
     if ohlc.empty:
-        ax.set_title(f"{title}\n（資料還不夠，之後會自動補齊）", fontsize=8)
+        ax.set_title(f"{title}\n(not enough data yet)", fontsize=8)
         ax.axis("off")
         return
     for i, (_, row) in enumerate(ohlc.iterrows()):
@@ -78,7 +85,7 @@ def render_timeframe(strength, label, rule):
     codes = top + bottom
 
     fig, axes = plt.subplots(7, 2, figsize=(11, 16))
-    fig.suptitle(f"貨幣強弱 K 線 — {label}（左：最強 7 名／右：最弱 7 名）", fontsize=13)
+    fig.suptitle(f"Currency Strength — {label} (Left: Top 7 / Right: Bottom 7)", fontsize=13)
 
     for i, code in enumerate(codes):
         row_i, col_i = i % 7, i // 7
