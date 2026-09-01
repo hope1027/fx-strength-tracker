@@ -33,8 +33,8 @@ CHART_DIR = pathlib.Path("charts")
 SCALE = 9000
 MAX_CANDLES = 30  # 每張小圖最多顯示幾根 K 棒，太多根會太擠
 
-# (顯示用標籤, pandas resample 頻率字串)
-TIMEFRAMES = [("1H", "1h"), ("4H", "4h"), ("1D", "1D")]
+# (顯示用標籤, 要連續幾筆快照湊成一根 K 棒)
+TIMEFRAMES = [("1H", 1), ("4H", 4), ("1D", 24)]
 
 
 def load_strength():
@@ -52,6 +52,37 @@ def load_strength():
     log_return = log_v.sub(log_v.iloc[0])  # 相對第一筆快照的漲跌幅（log）
     strength = log_return.sub(log_return.mean(axis=1), axis=0) * SCALE
     return strength
+
+
+def ohlc_by_count(series, n):
+    """把『連續 n 筆快照』湊成一根 K 棒，用資料筆數切、不用日曆時間切。
+    這樣就算排程時快時慢、中間漏跑過幾次，每根 K 棒依然是真正抓到的
+    n 筆資料聚合出來的，不會因為某個時段剛好資料太少而變成沒有漲跌
+    的扁平線。
+
+    n=1（1H）：每根代表『這一筆比上一筆』的漲跌，開盤＝上一筆、
+    收盤＝這一筆，這是資料本身的最小顆粒度，不會再更細了。
+    n>1（4H／1D）：每 n 筆分成一組，開盤＝這組第一筆、收盤＝這組
+    最後一筆、最高／最低＝這組裡的最大最小值。最後湊不滿 n 筆的
+    尾巴會先丟掉，避免出現一根異常短小的 K 棒。"""
+    series = series.dropna()
+    if n == 1:
+        o = series.shift(1)
+        c = series
+        high = pd.concat([o, c], axis=1).max(axis=1)
+        low = pd.concat([o, c], axis=1).min(axis=1)
+        return pd.DataFrame({"open": o, "high": high, "low": low, "close": c}).dropna()
+
+    group_id = np.arange(len(series)) // n
+    grouped = series.groupby(group_id)
+    ohlc = pd.DataFrame({
+        "open": grouped.first(),
+        "high": grouped.max(),
+        "low": grouped.min(),
+        "close": grouped.last(),
+    })
+    complete = grouped.size() == n
+    return ohlc[complete]
 
 
 def pick_top_bottom(strength, n=7):
@@ -80,7 +111,7 @@ def draw_candles(ax, ohlc, title):
     ax.tick_params(labelsize=7)
 
 
-def render_timeframe(strength, label, rule):
+def render_timeframe(strength, label, n):
     top, bottom = pick_top_bottom(strength)
     codes = top + bottom
 
@@ -90,7 +121,7 @@ def render_timeframe(strength, label, rule):
     for i, code in enumerate(codes):
         row_i, col_i = i % 7, i // 7
         ax = axes[row_i][col_i]
-        ohlc = strength[code].resample(rule).ohlc()
+        ohlc = ohlc_by_count(strength[code], n)
         draw_candles(ax, ohlc, code)
 
     plt.tight_layout(rect=[0, 0, 1, 0.96])
@@ -104,8 +135,8 @@ def main():
         print("還沒有 data/snapshots.csv，先讓排程多跑幾次再產圖")
         return
     strength = load_strength()
-    for label, rule in TIMEFRAMES:
-        render_timeframe(strength, label, rule)
+    for label, n in TIMEFRAMES:
+        render_timeframe(strength, label, n)
         print(f"已產生 charts/strength_{label}.png")
 
 
